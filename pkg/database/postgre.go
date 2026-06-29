@@ -83,3 +83,21 @@ func Close(db *gorm.DB) {
 
 	logger.Info("Database connection closed")
 }
+
+// TxManager abstracts DB transactions so they can be mocked in tests
+type TxManager interface {
+	Transaction(fc func(tx *gorm.DB) error) error
+}
+
+// GormTxManager is the real implementation using *gorm.DB
+type GormTxManager struct {
+	db *gorm.DB
+}
+
+func NewTxManager(db *gorm.DB) TxManager {
+	return &GormTxManager{db: db}
+}
+
+func (m *GormTxManager) Transaction(fc func(tx *gorm.DB) error) error {
+	return m.db.Transaction(fc)
+}

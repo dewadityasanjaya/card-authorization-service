@@ -14,3 +14,9 @@ run:
 
 tidy:
 	go mod tidy
+
+test:
+	go test -v -cover ./...
+
+test-service:
+	go test -v -cover ./internal/service/...

@@ -10,6 +10,7 @@ import (
 	apperrors "github.com/dewadityasanjaya/card-authorization-service/internal/errors"
 	"github.com/dewadityasanjaya/card-authorization-service/internal/model"
 	"github.com/dewadityasanjaya/card-authorization-service/internal/repository"
+	"github.com/dewadityasanjaya/card-authorization-service/pkg/database"
 	"github.com/dewadityasanjaya/card-authorization-service/pkg/logger"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -23,24 +24,23 @@ type AuthorizationService interface {
 }
 
 type authorizationService struct {
-	db       *gorm.DB
-	cardRepo repository.CardRepository
-	authRepo repository.AuthorizationRepository
+	txManager database.TxManager
+	cardRepo  repository.CardRepository
+	authRepo  repository.AuthorizationRepository
 }
 
 func NewAuthorizationService(
-	db *gorm.DB,
+	txManager database.TxManager,
 	cardRepo repository.CardRepository,
 	authRepo repository.AuthorizationRepository,
 ) AuthorizationService {
 	return &authorizationService{
-		db:       db,
-		cardRepo: cardRepo,
-		authRepo: authRepo,
+		txManager: txManager,
+		cardRepo:  cardRepo,
+		authRepo:  authRepo,
 	}
 }
 
-// Authorize processes a card authorization request
 func (s *authorizationService) Authorize(
 	req dto.AuthorizeRequest,
 	idempotencyKey string,
@@ -57,7 +57,6 @@ func (s *authorizationService) Authorize(
 	if idempotencyKey != "" {
 		existing, err := s.authRepo.FindIdempotencyKey(idempotencyKey)
 		if err == nil && existing != nil {
-			// Key exists — return the same authorization
 			auth, err := s.authRepo.FindByAuthorizationCode(existing.AuthorizationID.String())
 			if err == nil && auth != nil {
 				logger.Info("Idempotent response returned",
@@ -67,7 +66,7 @@ func (s *authorizationService) Authorize(
 					return &dto.AuthorizeApprovedResponse{
 						AuthorizationID:  auth.AuthorizationCode,
 						Status:           string(auth.Status),
-						RemainingBalance: 0, // already deducted
+						RemainingBalance: 0,
 					}, nil, nil
 				}
 				return nil, &dto.AuthorizeDeclinedResponse{
@@ -115,18 +114,16 @@ func (s *authorizationService) Authorize(
 		}, nil
 	}
 
-	// ── Step 4-6: DB Transaction (lock, check balance, deduct) ───
+	// ── Step 4-6: Transaction (lock, check balance, deduct) ──────
 	var approvedResponse *dto.AuthorizeApprovedResponse
 	var declinedResponse *dto.AuthorizeDeclinedResponse
 
-	txErr := s.db.Transaction(func(tx *gorm.DB) error {
-		// Lock the card row to prevent race conditions
+	txErr := s.txManager.Transaction(func(tx *gorm.DB) error {
 		lockedCard, err := s.cardRepo.FindByIDForUpdate(tx, card.ID)
 		if err != nil {
 			return apperrors.InternalError("failed to lock card")
 		}
 
-		// Check balance
 		logger.Info("Checking balance",
 			zap.Float64("balance", lockedCard.Balance),
 			zap.Float64("amount", req.Amount),
@@ -137,16 +134,14 @@ func (s *authorizationService) Authorize(
 				Status: "DECLINED",
 				Reason: apperrors.CodeInsufficientFunds,
 			}
-			return nil // not a DB error, just a business decline
+			return nil
 		}
 
-		// Deduct balance
 		lockedCard.Balance -= req.Amount
 		if err := s.cardRepo.Update(lockedCard); err != nil {
 			return apperrors.InternalError("failed to deduct balance")
 		}
 
-		// Save authorization
 		authCode := generateAuthCode()
 		auth := &model.Authorization{
 			ID:                uuid.New(),
@@ -163,7 +158,6 @@ func (s *authorizationService) Authorize(
 			return apperrors.InternalError("failed to save authorization")
 		}
 
-		// Save idempotency key
 		if idempotencyKey != "" {
 			iKey := &model.IdempotencyKey{
 				Key:             idempotencyKey,
@@ -203,7 +197,6 @@ func (s *authorizationService) Authorize(
 	return approvedResponse, nil, nil
 }
 
-// Reverse restores the balance for an approved authorization
 func (s *authorizationService) Reverse(authorizationID string) (*dto.ReverseResponse, error) {
 	logger.Info("Reversal started",
 		zap.String("authorizationId", authorizationID),
@@ -223,20 +216,17 @@ func (s *authorizationService) Reverse(authorizationID string) (*dto.ReverseResp
 
 	var response *dto.ReverseResponse
 
-	txErr := s.db.Transaction(func(tx *gorm.DB) error {
-		// Lock the card row
+	txErr := s.txManager.Transaction(func(tx *gorm.DB) error {
 		card, err := s.cardRepo.FindByIDForUpdate(tx, auth.CardID)
 		if err != nil {
 			return apperrors.InternalError("failed to lock card")
 		}
 
-		// Restore balance
 		card.Balance += auth.Amount
 		if err := s.cardRepo.Update(card); err != nil {
 			return apperrors.InternalError("failed to restore balance")
 		}
 
-		// Update authorization status
 		auth.Status = model.AuthorizationStatusReversed
 		if err := s.authRepo.Update(tx, auth); err != nil {
 			return apperrors.InternalError("failed to update authorization")
@@ -258,13 +248,11 @@ func (s *authorizationService) Reverse(authorizationID string) (*dto.ReverseResp
 
 	logger.Info("Reversal successful",
 		zap.String("authorizationId", authorizationID),
-		zap.Float64("refundedAmount", response.RefundedAmount),
 	)
 
 	return response, nil
 }
 
-// GetTransactionHistory returns all transactions for a card
 func (s *authorizationService) GetTransactionHistory(cardID string) ([]dto.TransactionHistoryResponse, error) {
 	parsedID, err := uuid.Parse(cardID)
 	if err != nil {
@@ -291,9 +279,6 @@ func (s *authorizationService) GetTransactionHistory(cardID string) ([]dto.Trans
 	return result, nil
 }
 
-// ── Helpers ──────────────────────────────────────────────────────
-
-// generateAuthCode creates a unique authorization code e.g. AUTH-A1B2C3D4
 func generateAuthCode() string {
 	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	code := make([]byte, 8)
@@ -303,7 +288,6 @@ func generateAuthCode() string {
 	return fmt.Sprintf("AUTH-%s", string(code))
 }
 
-// maskCardNumber hides middle digits for safe logging e.g. 4556****1234
 func maskCardNumber(cardNumber string) string {
 	if len(cardNumber) < 8 {
 		return "****"

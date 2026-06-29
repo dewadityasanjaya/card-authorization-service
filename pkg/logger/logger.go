@@ -34,22 +34,37 @@ func Init(env string) {
 
 // Convenience wrappers so you don't import zap everywhere
 func Info(msg string, fields ...zap.Field) {
+	if Log == nil {
+		return
+	}
 	Log.Info(msg, fields...)
 }
 
 func Error(msg string, fields ...zap.Field) {
+	if Log == nil {
+		return
+	}
 	Log.Error(msg, fields...)
 }
 
 func Warn(msg string, fields ...zap.Field) {
+	if Log == nil {
+		return
+	}
 	Log.Warn(msg, fields...)
 }
 
 func Debug(msg string, fields ...zap.Field) {
+	if Log == nil {
+		return
+	}
 	Log.Debug(msg, fields...)
 }
 
 func Fatal(msg string, fields ...zap.Field) {
+	if Log == nil {
+		return
+	}
 	Log.Fatal(msg, fields...)
 }
 

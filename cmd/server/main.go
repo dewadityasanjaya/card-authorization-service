@@ -37,7 +37,8 @@ func main() {
 
 	// ── Services ─────────────────────────────────────
 	cardSvc := service.NewCardService(cardRepo)
-	authSvc := service.NewAuthorizationService(db, cardRepo, authRepo)
+	txManager := database.NewTxManager(db)
+	authSvc := service.NewAuthorizationService(txManager, cardRepo, authRepo)
 
 	// ── Handlers ─────────────────────────────────────
 	cardHandler := handler.NewCardHandler(cardSvc)
