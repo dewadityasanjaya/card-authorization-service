@@ -8,3 +8,6 @@ migrate-down:
 
 migrate-version:
 	migrate -path ./migrations -database "$(DB_URL)" version
+
+run:
+	go run cmd/server/main.go
