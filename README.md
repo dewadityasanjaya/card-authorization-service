@@ -1,196 +1,247 @@
-[![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/golang-migrate/migrate/ci.yaml?branch=master)](https://github.com/golang-migrate/migrate/actions/workflows/ci.yaml?query=branch%3Amaster)
-[![GoDoc](https://pkg.go.dev/badge/github.com/golang-migrate/migrate)](https://pkg.go.dev/github.com/golang-migrate/migrate/v4)
-[![Coverage Status](https://img.shields.io/coveralls/github/golang-migrate/migrate/master.svg)](https://coveralls.io/github/golang-migrate/migrate?branch=master)
-[![packagecloud.io](https://img.shields.io/badge/deb-packagecloud.io-844fec.svg)](https://packagecloud.io/golang-migrate/migrate?filter=debs)
-[![Docker Pulls](https://img.shields.io/docker/pulls/migrate/migrate.svg)](https://hub.docker.com/r/migrate/migrate/)
-![Supported Go Versions](https://img.shields.io/badge/Go-1.21%2C%201.22-lightgrey.svg)
-[![GitHub Release](https://img.shields.io/github/release/golang-migrate/migrate.svg)](https://github.com/golang-migrate/migrate/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/golang-migrate/migrate/v4)](https://goreportcard.com/report/github.com/golang-migrate/migrate/v4)
+# Card Authorization Service
 
-# migrate
+A backend service for managing prepaid cards and simulating card authorization flows. The service supports card creation, balance top-up, freezing/unfreezing cards, purchase authorization, transaction reversal, idempotent authorization requests, and transaction history.
 
-__Database migrations written in Go. Use as [CLI](#cli-usage) or import as [library](#use-in-your-go-project).__
+This project was built as a focused card authorization API using Go, Gin, PostgreSQL, GORM, and database migrations.
 
-* Migrate reads migrations from [sources](#migration-sources)
-   and applies them in correct order to a [database](#databases).
-* Drivers are "dumb", migrate glues everything together and makes sure the logic is bulletproof.
-   (Keeps the drivers lightweight, too.)
-* Database drivers don't assume things or try to correct user input. When in doubt, fail.
+## Highlights
 
-Forked from [mattes/migrate](https://github.com/mattes/migrate)
+- Create prepaid cards with generated card numbers
+- Retrieve card details and current balance
+- Freeze and unfreeze cards
+- Top up card balance
+- Authorize transactions against card balance
+- Decline transactions for frozen cards, missing cards, currency mismatch, and insufficient funds
+- Reverse approved authorizations and refund the card balance
+- Use row-level locking during balance deduction and reversal
+- Support idempotency keys for authorization requests
+- Store schema changes in SQL migrations
+- Cover service-layer behavior with unit tests and mocks
+- Provide Docker and Docker Compose setup for local development
 
-## Databases
+## Tech Stack
 
-Database drivers run migrations. [Add a new database?](database/driver.go)
+- Go
+- Gin HTTP framework
+- PostgreSQL
+- GORM
+- golang-migrate
+- Zap logger
+- Viper configuration
+- Testify for unit tests
+- Docker and Docker Compose
 
-* [PostgreSQL](database/postgres)
-* [PGX v4](database/pgx)
-* [PGX v5](database/pgx/v5)
-* [Redshift](database/redshift)
-* [Ql](database/ql)
-* [Cassandra / ScyllaDB](database/cassandra)
-* [SQLite](database/sqlite)
-* [SQLite3](database/sqlite3) ([todo #165](https://github.com/mattes/migrate/issues/165))
-* [SQLCipher](database/sqlcipher)
-* [MySQL / MariaDB](database/mysql)
-* [Neo4j](database/neo4j)
-* [MongoDB](database/mongodb)
-* [CrateDB](database/crate) ([todo #170](https://github.com/mattes/migrate/issues/170))
-* [Shell](database/shell) ([todo #171](https://github.com/mattes/migrate/issues/171))
-* [Google Cloud Spanner](database/spanner)
-* [CockroachDB](database/cockroachdb)
-* [YugabyteDB](database/yugabytedb)
-* [ClickHouse](database/clickhouse)
-* [Firebird](database/firebird)
-* [MS SQL Server](database/sqlserver)
-* [rqlite](database/rqlite)
+## Project Structure
 
-### Database URLs
+```text
+cmd/server/              Application entry point and route wiring
+config/                  Environment configuration loader
+internal/dto/            Request and response payloads
+internal/errors/         Application error codes and mapping helpers
+internal/handler/        HTTP handlers
+internal/middleware/     Request logging and idempotency middleware
+internal/model/          Database models
+internal/repository/     Database access layer
+internal/service/        Business logic
+migrations/              SQL migration files
+pkg/cardnumber/          Card number generator
+pkg/database/            PostgreSQL connection and transaction manager
+pkg/logger/              Zap logger setup
+```
 
-Database connection strings are specified via URLs. The URL format is driver dependent but generally has the form: `dbdriver://username:password@host:port/dbname?param1=true&param2=false`
+## Core Flow
 
-Any [reserved URL characters](https://en.wikipedia.org/wiki/Percent-encoding#Percent-encoding_reserved_characters) need to be escaped. Note, the `%` character also [needs to be escaped](https://en.wikipedia.org/wiki/Percent-encoding#Percent-encoding_the_percent_character)
+Authorization follows this flow:
 
-Explicitly, the following characters need to be escaped:
-`!`, `#`, `$`, `%`, `&`, `'`, `(`, `)`, `*`, `+`, `,`, `/`, `:`, `;`, `=`, `?`, `@`, `[`, `]`
+1. Receive transaction request with card number, merchant, amount, and currency.
+2. Check idempotency key when provided.
+3. Find the card by card number.
+4. Decline if the card does not exist, is frozen, has a currency mismatch, or has insufficient balance.
+5. Lock the card row with `SELECT FOR UPDATE`.
+6. Deduct the amount and create an approved authorization record inside one database transaction.
+7. Return the authorization result and remaining balance.
 
-It's easiest to always run the URL parts of your DB connection URL (e.g. username, password, etc) through an URL encoder. See the example Python snippets below:
+Reversal locks the card row again, restores the approved amount, and marks the authorization as `REVERSED`.
+
+## API Endpoints
+
+### Health Check
+
+```http
+GET /health
+```
+
+### Cards
+
+```http
+POST /cards
+GET /cards/:id
+POST /cards/:id/freeze
+POST /cards/:id/unfreeze
+POST /cards/:id/topup
+GET /cards/:id/transactions
+```
+
+### Transactions
+
+```http
+POST /transactions/authorize
+POST /transactions/:authorizationId/reverse
+```
+
+`POST /transactions/authorize` supports an optional `Idempotency-Key` header.
+
+## Example Requests
+
+### Create a Card
 
 ```bash
-$ python3 -c 'import urllib.parse; print(urllib.parse.quote(input("String to encode: "), ""))'
-String to encode: FAKEpassword!#$%&'()*+,/:;=?@[]
-FAKEpassword%21%23%24%25%26%27%28%29%2A%2B%2C%2F%3A%3B%3D%3F%40%5B%5D
-$ python2 -c 'import urllib; print urllib.quote(raw_input("String to encode: "), "")'
-String to encode: FAKEpassword!#$%&'()*+,/:;=?@[]
-FAKEpassword%21%23%24%25%26%27%28%29%2A%2B%2C%2F%3A%3B%3D%3F%40%5B%5D
-$
+curl -X POST http://localhost:8080/cards \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cardholderName": "Dewa Ditya Sanjaya",
+    "currency": "IDR",
+    "initialBalance": 500000
+  }'
 ```
 
-## Migration Sources
-
-Source drivers read migrations from local or remote sources. [Add a new source?](source/driver.go)
-
-* [Filesystem](source/file) - read from filesystem
-* [io/fs](source/iofs) - read from a Go [io/fs](https://pkg.go.dev/io/fs#FS)
-* [Go-Bindata](source/go_bindata) - read from embedded binary data ([jteeuwen/go-bindata](https://github.com/jteeuwen/go-bindata))
-* [pkger](source/pkger) - read from embedded binary data ([markbates/pkger](https://github.com/markbates/pkger))
-* [GitHub](source/github) - read from remote GitHub repositories
-* [GitHub Enterprise](source/github_ee) - read from remote GitHub Enterprise repositories
-* [Bitbucket](source/bitbucket) - read from remote Bitbucket repositories
-* [Gitlab](source/gitlab) - read from remote Gitlab repositories
-* [AWS S3](source/aws_s3) - read from Amazon Web Services S3
-* [Google Cloud Storage](source/google_cloud_storage) - read from Google Cloud Platform Storage
-
-## CLI usage
-
-* Simple wrapper around this library.
-* Handles ctrl+c (SIGINT) gracefully.
-* No config search paths, no config files, no magic ENV var injections.
-
-__[CLI Documentation](cmd/migrate)__
-
-### Basic usage
+### Top Up a Card
 
 ```bash
-$ migrate -source file://path/to/migrations -database postgres://localhost:5432/database up 2
+curl -X POST http://localhost:8080/cards/{cardId}/topup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 100000
+  }'
 ```
 
-### Docker usage
+### Authorize a Transaction
 
 ```bash
-$ docker run -v {{ migration dir }}:/migrations --network host migrate/migrate
-    -path=/migrations/ -database postgres://localhost:5432/database up 2
+curl -X POST http://localhost:8080/transactions/authorize \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: request-001" \
+  -d '{
+    "cardNumber": "1234567890123456",
+    "merchantId": "MRC-001",
+    "merchantName": "Coffee Shop",
+    "currency": "IDR",
+    "amount": 75000
+  }'
 ```
 
-## Use in your Go project
-
-* API is stable and frozen for this release (v3 & v4).
-* Uses [Go modules](https://golang.org/cmd/go/#hdr-Modules__module_versions__and_more) to manage dependencies.
-* To help prevent database corruptions, it supports graceful stops via `GracefulStop chan bool`.
-* Bring your own logger.
-* Uses `io.Reader` streams internally for low memory overhead.
-* Thread-safe and no goroutine leaks.
-
-__[Go Documentation](https://pkg.go.dev/github.com/golang-migrate/migrate/v4)__
-
-```go
-import (
-    "github.com/golang-migrate/migrate/v4"
-    _ "github.com/golang-migrate/migrate/v4/database/postgres"
-    _ "github.com/golang-migrate/migrate/v4/source/github"
-)
-
-func main() {
-    m, err := migrate.New(
-        "github://mattes:personal-access-token@mattes/migrate_test",
-        "postgres://localhost:5432/database?sslmode=enable")
-    m.Steps(2)
-}
-```
-
-Want to use an existing database client?
-
-```go
-import (
-    "database/sql"
-    _ "github.com/lib/pq"
-    "github.com/golang-migrate/migrate/v4"
-    "github.com/golang-migrate/migrate/v4/database/postgres"
-    _ "github.com/golang-migrate/migrate/v4/source/file"
-)
-
-func main() {
-    db, err := sql.Open("postgres", "postgres://localhost:5432/database?sslmode=enable")
-    driver, err := postgres.WithInstance(db, &postgres.Config{})
-    m, err := migrate.NewWithDatabaseInstance(
-        "file:///migrations",
-        "postgres", driver)
-    m.Up() // or m.Step(2) if you want to explicitly set the number of migrations to run
-}
-```
-
-## Getting started
-
-Go to [getting started](GETTING_STARTED.md)
-
-## Tutorials
-
-* [CockroachDB](database/cockroachdb/TUTORIAL.md)
-* [PostgreSQL](database/postgres/TUTORIAL.md)
-
-(more tutorials to come)
-
-## Migration files
-
-Each migration has an up and down migration. [Why?](FAQ.md#why-two-separate-files-up-and-down-for-a-migration)
+### Reverse an Authorization
 
 ```bash
-1481574547_create_users_table.up.sql
-1481574547_create_users_table.down.sql
+curl -X POST http://localhost:8080/transactions/{authorizationId}/reverse
 ```
 
-[Best practices: How to write migrations.](MIGRATIONS.md)
+## Environment Variables
 
-## Coming from another db migration tool?
+Create a `.env` file from `.env.example`.
 
-Check out [migradaptor](https://github.com/musinit/migradaptor/).
-*Note: migradaptor is not affiliated or supported by this project*
+```env
+APP_PORT=8080
+APP_ENV=development
 
-## Versions
+DB_HOST=localhost
+DB_USER=cardauth
+DB_PASSWORD=cardauth_secret
+DB_NAME=card_auth_db
+DB_PORT=5432
+DB_SSLMODE=disable
+```
 
-Version | Supported? | Import | Notes
---------|------------|--------|------
-**master** | :white_check_mark: | `import "github.com/golang-migrate/migrate/v4"` | New features and bug fixes arrive here first |
-**v4** | :white_check_mark: | `import "github.com/golang-migrate/migrate/v4"` | Used for stable releases |
-**v3** | :x: | `import "github.com/golang-migrate/migrate"` (with package manager) or `import "gopkg.in/golang-migrate/migrate.v3"` (not recommended) | **DO NOT USE** - No longer supported |
+When running the app service inside Docker Compose, use `DB_HOST=postgres` because the application connects through the Compose network.
 
-## Development and Contributing
+## Running Locally
 
-Yes, please! [`Makefile`](Makefile) is your friend,
-read the [development guide](CONTRIBUTING.md).
+### 1. Start PostgreSQL
 
-Also have a look at the [FAQ](FAQ.md).
+```bash
+docker compose up -d postgres
+```
 
----
+### 2. Run Database Migrations
 
-Looking for alternatives? [https://awesome-go.com/#database](https://awesome-go.com/#database).
+```bash
+make migrate-up
+```
+
+The Makefile uses this database URL:
+
+```text
+postgres://cardauth:cardauth_secret@localhost:5432/card_auth_db?sslmode=disable
+```
+
+Update `DB_URL` in the Makefile if your local database credentials are different.
+
+### 3. Start the API
+
+```bash
+make run
+```
+
+The API will listen on:
+
+```text
+http://localhost:8080
+```
+
+## Running With Docker Compose
+
+```bash
+docker compose up --build
+```
+
+Note: migrations are not automatically executed by the application container. Run migrations before starting the full stack, or add a migration step to the Compose workflow.
+
+## Testing
+
+Run all tests:
+
+```bash
+make test
+```
+
+Run service tests only:
+
+```bash
+make test-service
+```
+
+## Database Schema
+
+The service uses three main tables:
+
+- `cards`: stores card number, cardholder name, status, currency, and balance
+- `authorizations`: stores approved/reversed authorization records
+- `idempotency_keys`: stores processed idempotency keys for authorization requests
+
+Migrations are stored in the `migrations/` directory and include matching `up` and `down` files.
+
+## Comments
+
+This project has a clean separation between handlers, services, repositories, models, and DTOs. The service layer is where most business rules live, which makes the code easier to test. Using a transaction manager abstraction is also a good decision because it keeps transaction behavior testable with mocks.
+
+The strongest part of the implementation is the authorization flow: it checks card state, validates currency, handles insufficient funds, locks the card row before balance mutation, and records the authorization inside a database transaction. That is the right direction for a card/payment-style service where concurrency matters.
+
+## Future Improvements
+
+- Use an integer minor-unit money representation, such as cents, instead of `float64` for balances and amounts.
+- Store declined authorization attempts too, so transaction history can include both approved and declined decisions.
+- Improve idempotency response storage so repeated requests can return the original response exactly, including remaining balance and decline reason.
+- Add idempotency support for reversal requests.
+- Add request/response examples for error cases in API documentation.
+- Add integration tests with PostgreSQL, especially for concurrent authorization and reversal scenarios.
+- Add OpenAPI/Swagger documentation.
+- Add authentication and authorization if the API is exposed outside a trusted environment.
+- Add pagination for transaction history.
+- Add structured validation for supported currencies.
+- Add a migration runner or startup command in Docker Compose.
+- Avoid copying `.env` into the Docker image; pass configuration only through environment variables or secrets.
+- Add CI checks for tests, formatting, linting, and migrations.
+
+## License
+
+This project is licensed under the terms in the `LICENSE` file.
