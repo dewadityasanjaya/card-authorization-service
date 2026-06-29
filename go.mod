@@ -3,8 +3,11 @@ module github.com/dewadityasanjaya/card-authorization-service
 go 1.25.4
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/spf13/viper v1.21.0
 	go.uber.org/zap v1.28.0
+	gorm.io/driver/postgres v1.6.0
+	gorm.io/gorm v1.31.2
 )
 
 require (
@@ -31,7 +34,4 @@ require (
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
-	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
-	gorm.io/driver/postgres v1.6.0 // indirect
-	gorm.io/gorm v1.31.2 // indirect
 )
